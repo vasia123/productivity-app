@@ -39,6 +39,15 @@ export const useProjectsStore = defineStore("projects", () => {
     }
   }
 
+  async function importDesktops() {
+    loading.value = true;
+    try {
+      projects.value = await api.importDesktops();
+    } finally {
+      loading.value = false;
+    }
+  }
+
   async function switchProject(id: string) {
     await api.switchProject(id);
     currentProjectId.value = id;
@@ -49,6 +58,7 @@ export const useProjectsStore = defineStore("projects", () => {
     currentProjectId,
     loading,
     fetchProjects,
+    importDesktops,
     createProject,
     deleteProject,
     renameProject,

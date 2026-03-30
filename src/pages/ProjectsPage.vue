@@ -28,6 +28,10 @@ function openProject(id: string) {
   router.push({ name: "project-detail", params: { id } });
 }
 
+async function importDesktops() {
+  await store.importDesktops();
+}
+
 async function deleteProject(id: string) {
   await store.deleteProject(id);
 }
@@ -43,9 +47,12 @@ function getColor(index: number, color: string | null): string {
   <div class="page">
     <header class="header">
       <h1>Projects</h1>
-      <button class="btn-primary" @click="showNewForm = !showNewForm">
-        {{ showNewForm ? "Cancel" : "+ New Project" }}
-      </button>
+      <div class="header-actions">
+        <button class="btn-ghost" @click="importDesktops">Import Desktops</button>
+        <button class="btn-primary" @click="showNewForm = !showNewForm">
+          {{ showNewForm ? "Cancel" : "+ New Project" }}
+        </button>
+      </div>
     </header>
 
     <div v-if="showNewForm" class="new-project-form">
@@ -105,8 +112,6 @@ function getColor(index: number, color: string | null): string {
 <style scoped>
 .page {
   padding: 24px;
-  max-width: 960px;
-  margin: 0 auto;
 }
 
 .header {
@@ -119,6 +124,11 @@ function getColor(index: number, color: string | null): string {
 .header h1 {
   font-size: 24px;
   font-weight: 600;
+}
+
+.header-actions {
+  display: flex;
+  gap: 8px;
 }
 
 .new-project-form {
@@ -140,8 +150,8 @@ function getColor(index: number, color: string | null): string {
 
 .project-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
 }
 
 .project-card {
@@ -163,7 +173,7 @@ function getColor(index: number, color: string | null): string {
 }
 
 .card-body {
-  padding: 16px;
+  padding: 12px;
 }
 
 .card-body h3 {

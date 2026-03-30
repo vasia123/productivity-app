@@ -47,11 +47,17 @@ unsafe extern "system" fn enum_callback(hwnd: HWND, lparam: LPARAM) -> BOOL {
     // Get process exe name
     let exe_name = get_process_exe_name(hwnd).unwrap_or_default();
 
+    // Get the virtual desktop this window belongs to
+    let desktop_id = winvd::get_desktop_by_window(hwnd)
+        .ok()
+        .and_then(|d| d.get_id().ok())
+        .map(|id| format!("{:?}", id));
+
     let window_info = WindowInfo {
         handle: hwnd.0 as isize,
         title,
         exe_name,
-        desktop_id: None,
+        desktop_id,
         is_visible: true,
     };
 

@@ -21,11 +21,24 @@ pub fn run() {
 
             let data = persistence::load_data(&data_path);
 
-            app.manage(Mutex::new(AppState {
+            let mut app_state = AppState {
                 projects: data.projects,
                 assignments: data.assignments,
                 data_path,
-            }));
+            };
+
+            // Sync with existing Windows virtual desktops
+            if let Err(e) = commands::projects::sync_desktops(&mut app_state) {
+                eprintln!("Warning: failed to sync desktops: {e}");
+            } else {
+                let persist_data = models::PersistenceData {
+                    projects: app_state.projects.clone(),
+                    assignments: app_state.assignments.clone(),
+                };
+                let _ = persistence::save_data(&app_state.data_path, &persist_data);
+            }
+
+            app.manage(Mutex::new(app_state));
 
             Ok(())
         })
@@ -39,6 +52,7 @@ pub fn run() {
             commands::windows::assign_window_to_project,
             commands::windows::unassign_window,
             commands::windows::get_project_windows,
+            commands::projects::import_desktops,
             commands::desktops::list_desktops,
             commands::desktops::get_current_desktop,
         ])

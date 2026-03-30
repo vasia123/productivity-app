@@ -21,6 +21,8 @@ export const api = {
   switchProject: (projectId: string) =>
     invoke<void>("switch_project", { projectId }),
 
+  importDesktops: () => invoke<Project[]>("import_desktops"),
+
   listOpenWindows: () => invoke<WindowInfo[]>("list_open_windows"),
 
   assignWindow: (projectId: string, windowHandle: number) =>
