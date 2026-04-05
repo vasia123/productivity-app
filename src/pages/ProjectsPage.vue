@@ -1,54 +1,156 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { ref, onMounted, onUnmounted, watch } from "vue";
 import { useRouter } from "vue-router";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useProjectsStore } from "@/stores/projects";
+import { useTasksStore } from "@/stores/tasks";
+import KanbanColumn from "@/components/KanbanColumn.vue";
+import ProjectCard from "@/components/ProjectCard.vue";
+import TaskCard from "@/components/TaskCard.vue";
+import TaskInput from "@/components/TaskInput.vue";
+import PrioritizationView from "@/components/PrioritizationView.vue";
 
-const store = useProjectsStore();
 const router = useRouter();
-const newProjectName = ref("");
+const projectsStore = useProjectsStore();
+const tasksStore = useTasksStore();
+const viewMode = ref<"kanban" | "prioritize">("kanban");
 const showNewForm = ref(false);
+const newProjectName = ref("");
 
-onMounted(() => {
-  store.fetchProjects();
+// Task/window counts per project (loaded once)
+const taskCounts = ref<Record<string, number>>({});
+const windowCounts = ref<Record<string, number>>({});
+
+let unlistenDesktop: UnlistenFn | null = null;
+
+onMounted(async () => {
+  await projectsStore.fetchProjects();
+  await loadCounts();
+  if (projectsStore.inProgressProject) {
+    await tasksStore.fetchTasks(projectsStore.inProgressProject.id);
+  }
+
+  // Listen for external desktop switches (Win+Ctrl+Arrow, etc.)
+  unlistenDesktop = await listen("desktop-changed", async () => {
+    await projectsStore.fetchProjects();
+    await loadCounts();
+  });
 });
 
+onUnmounted(() => {
+  unlistenDesktop?.();
+});
+
+watch(
+  () => projectsStore.inProgressProject?.id,
+  async (id) => {
+    if (id) {
+      await tasksStore.fetchTasks(id);
+    } else {
+      tasksStore.clear();
+    }
+  }
+);
+
+async function loadCounts() {
+  for (const p of projectsStore.projects) {
+    const tasks = await import("@/composables/useTauri").then((m) =>
+      m.api.listTasks(p.id)
+    );
+    taskCounts.value[p.id] = tasks.length;
+    const wins = await import("@/composables/useTauri").then((m) =>
+      m.api.getProjectWindows(p.id)
+    );
+    windowCounts.value[p.id] = wins.length;
+  }
+}
+
+// Project creation
 async function createProject() {
   const name = newProjectName.value.trim();
   if (!name) return;
-  await store.createProject(name);
+  await projectsStore.createProject(name);
   newProjectName.value = "";
   showNewForm.value = false;
+  await loadCounts();
 }
 
-async function switchProject(id: string) {
-  await store.switchProject(id);
-}
-
+// Navigate to project detail (window management)
 function openProject(id: string) {
   router.push({ name: "project-detail", params: { id } });
 }
 
-async function importDesktops() {
-  await store.importDesktops();
+// Drag & Drop: project → in_progress
+async function onDropInProgress(e: DragEvent) {
+  const projectId = e.dataTransfer!.getData("application/x-project-id");
+  if (projectId) {
+    await projectsStore.setProjectBoardStatus(projectId, "in_progress");
+    await loadCounts();
+  }
 }
 
-async function deleteProject(id: string) {
-  await store.deleteProject(id);
+// Drag & Drop: project → todo
+async function activateProject(id: string) {
+  await projectsStore.setProjectBoardStatus(id, "in_progress");
+  await loadCounts();
 }
 
-const defaultColors = ["#4fc3f7", "#66bb6a", "#ffa726", "#ef5350", "#ab47bc", "#26c6da"];
+async function onDropTodo(e: DragEvent) {
+  const projectId = e.dataTransfer!.getData("application/x-project-id");
+  if (projectId) {
+    await projectsStore.setProjectBoardStatus(projectId, "todo");
+  }
+}
 
-function getColor(index: number, color: string | null): string {
-  return color || defaultColors[index % defaultColors.length];
+// Drag & Drop: task → done
+async function onDropDone(e: DragEvent) {
+  const taskId = e.dataTransfer!.getData("application/x-task-id");
+  if (taskId) {
+    await tasksStore.updateTaskStatus(taskId, "done");
+  }
+}
+
+// Drag & Drop: task → back to todo (from done)
+async function onDropInProgressTasks(e: DragEvent) {
+  const taskId = e.dataTransfer!.getData("application/x-task-id");
+  if (taskId) {
+    await tasksStore.updateTaskStatus(taskId, "todo");
+    return;
+  }
+  // Also handle project drop
+  onDropInProgress(e);
+}
+
+// Task creation
+async function onCreateTask(title: string) {
+  if (!projectsStore.inProgressProject) return;
+  await tasksStore.createTask(projectsStore.inProgressProject.id, title);
+  taskCounts.value[projectsStore.inProgressProject.id] =
+    (taskCounts.value[projectsStore.inProgressProject.id] || 0) + 1;
+}
+
+// Task deletion
+async function onDeleteTask(taskId: string) {
+  await tasksStore.deleteTask(taskId);
+}
+
+// Active project color
+function activeColor(): string | undefined {
+  return projectsStore.inProgressProject?.color || undefined;
 }
 </script>
 
 <template>
   <div class="page">
     <header class="header">
-      <h1>Projects</h1>
+      <h1>Board</h1>
       <div class="header-actions">
-        <button class="btn-ghost" @click="importDesktops">Import Desktops</button>
+        <button
+          class="btn-ghost"
+          @click="viewMode = viewMode === 'kanban' ? 'prioritize' : 'kanban'"
+        >
+          {{ viewMode === "kanban" ? "Prioritize" : "Board" }}
+        </button>
         <button class="btn-primary" @click="showNewForm = !showNewForm">
           {{ showNewForm ? "Cancel" : "+ New Project" }}
         </button>
@@ -66,138 +168,139 @@ function getColor(index: number, color: string | null): string {
       <button class="btn-primary" @click="createProject">Create</button>
     </div>
 
-    <div v-if="store.loading" class="loading">Loading...</div>
-
-    <div v-else-if="store.projects.length === 0" class="empty">
-      <p>No projects yet. Create one to get started!</p>
-    </div>
-
-    <div v-else class="project-grid">
-      <div
-        v-for="(project, index) in store.projects"
-        :key="project.id"
-        class="project-card"
-        @click="openProject(project.id)"
-      >
-        <div
-          class="card-accent"
-          :style="{ background: getColor(index, project.color) }"
+    <!-- Kanban View -->
+    <div v-if="viewMode === 'kanban'" class="kanban-board">
+      <KanbanColumn title="TODO" @drop="onDropTodo">
+        <ProjectCard
+          v-for="p in projectsStore.todoProjects"
+          :key="p.id"
+          :project="p"
+          :task-count="taskCounts[p.id] || 0"
+          :window-count="windowCounts[p.id] || 0"
+          @click="activateProject(p.id)"
         />
-        <div class="card-body">
-          <h3>{{ project.name }}</h3>
-          <p class="card-meta">
-            {{ project.desktop_name || "No desktop" }}
-          </p>
-          <div class="card-actions" @click.stop>
-            <button
-              class="btn-primary btn-small"
-              @click="switchProject(project.id)"
-              :class="{ active: store.currentProjectId === project.id }"
-            >
-              {{ store.currentProjectId === project.id ? "Active" : "Switch" }}
-            </button>
-            <button
-              class="btn-danger btn-small"
-              @click="deleteProject(project.id)"
-            >
-              Delete
-            </button>
-          </div>
+        <div v-if="projectsStore.todoProjects.length === 0" class="empty-hint">
+          No projects in queue
         </div>
-      </div>
+      </KanbanColumn>
+
+      <KanbanColumn
+        title="In Progress"
+        :color="activeColor()"
+        @drop="onDropInProgressTasks"
+      >
+        <template v-if="projectsStore.inProgressProject">
+          <div
+            class="active-header"
+            :style="{ color: activeColor() }"
+            @dblclick="openProject(projectsStore.inProgressProject!.id)"
+          >
+            {{ projectsStore.inProgressProject.name }}
+          </div>
+          <TaskInput @create="onCreateTask" />
+          <TaskCard
+            v-for="t in tasksStore.todoTasks"
+            :key="t.id"
+            :task="t"
+            @delete="onDeleteTask(t.id)"
+          />
+          <div v-if="tasksStore.todoTasks.length === 0" class="empty-hint">
+            No active tasks
+          </div>
+        </template>
+        <div v-else class="empty-hint">
+          Drag a project here to start working
+        </div>
+      </KanbanColumn>
+
+      <KanbanColumn title="Done" @drop="onDropDone">
+        <template v-if="projectsStore.inProgressProject">
+          <TaskCard
+            v-for="t in tasksStore.doneTasks"
+            :key="t.id"
+            :task="t"
+            :draggable="true"
+            @delete="onDeleteTask(t.id)"
+          />
+          <div v-if="tasksStore.doneTasks.length === 0" class="empty-hint">
+            Completed tasks appear here
+          </div>
+        </template>
+        <div v-else class="empty-hint">
+          &mdash;
+        </div>
+      </KanbanColumn>
     </div>
+
+    <!-- Prioritization View -->
+    <PrioritizationView v-else />
   </div>
 </template>
 
 <style scoped>
 .page {
   padding: 24px;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
 }
 
 .header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 24px;
+  margin-bottom: 16px;
+  flex-shrink: 0;
 }
 
 .header h1 {
-  font-size: 24px;
+  font-size: 22px;
   font-weight: 600;
 }
 
 .header-actions {
   display: flex;
   gap: 8px;
+  align-items: center;
 }
+
 
 .new-project-form {
   display: flex;
   gap: 12px;
-  margin-bottom: 24px;
+  margin-bottom: 16px;
+  flex-shrink: 0;
 }
 
 .new-project-form input {
   flex: 1;
 }
 
-.loading,
-.empty {
-  text-align: center;
-  padding: 48px;
-  color: var(--text-secondary);
-}
-
-.project-grid {
+.kanban-board {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 12px;
+  grid-template-columns: 1fr 1.5fr 1fr;
+  gap: 16px;
+  flex: 1;
+  min-height: 0;
 }
 
-.project-card {
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  overflow: hidden;
-  cursor: pointer;
-  transition: border-color 0.15s, transform 0.1s;
-}
-
-.project-card:hover {
-  border-color: var(--accent);
-  transform: translateY(-2px);
-}
-
-.card-accent {
-  height: 4px;
-}
-
-.card-body {
-  padding: 12px;
-}
-
-.card-body h3 {
+.active-header {
   font-size: 16px;
-  margin-bottom: 4px;
+  font-weight: 700;
+  margin-bottom: 8px;
+  cursor: pointer;
 }
 
-.card-meta {
-  font-size: 13px;
+.active-header:hover {
+  text-decoration: underline;
+}
+
+.empty-hint {
+  text-align: center;
+  padding: 24px 12px;
   color: var(--text-secondary);
-  margin-bottom: 12px;
-}
-
-.card-actions {
-  display: flex;
-  gap: 8px;
-}
-
-.btn-small {
-  padding: 4px 12px;
-  font-size: 12px;
-}
-
-.btn-primary.active {
-  background: var(--success);
+  font-size: 13px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
 }
 </style>

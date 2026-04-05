@@ -30,6 +30,8 @@ pub fn create_project(
         desktop_guid: Some(desktop.guid),
         desktop_name: Some(name),
         color,
+        sort_order: 0,
+        board_status: "todo".into(),
         created_at: now.clone(),
         updated_at: now,
     };
@@ -153,7 +155,8 @@ pub fn sync_desktops(state: &mut crate::state::AppState) -> Result<(), String> {
     let live_guids: std::collections::HashSet<String> =
         desktops.iter().map(|d| d.guid.clone()).collect();
 
-    // Create projects for desktops that don't have one
+    // Create projects for desktops that don't have one,
+    // and fix empty names on existing projects
     for desktop in &desktops {
         if !existing_guids.contains(&desktop.guid) {
             state.projects.push(Project {
@@ -162,9 +165,25 @@ pub fn sync_desktops(state: &mut crate::state::AppState) -> Result<(), String> {
                 desktop_guid: Some(desktop.guid.clone()),
                 desktop_name: Some(desktop.name.clone()),
                 color: None,
+                sort_order: state.projects.len() as u32,
+                board_status: "todo".into(),
                 created_at: now.clone(),
                 updated_at: now.clone(),
             });
+        } else {
+            // Update existing projects with empty names
+            if let Some(project) = state.projects.iter_mut().find(|p| {
+                p.desktop_guid.as_ref() == Some(&desktop.guid)
+            }) {
+                if project.name.is_empty() {
+                    project.name = desktop.name.clone();
+                    project.updated_at = now.clone();
+                }
+                if project.desktop_name.as_deref().unwrap_or("").is_empty() {
+                    project.desktop_name = Some(desktop.name.clone());
+                    project.updated_at = now.clone();
+                }
+            }
         }
     }
 
@@ -179,8 +198,26 @@ pub fn sync_desktops(state: &mut crate::state::AppState) -> Result<(), String> {
         }
     }
 
-    // Auto-assign windows to projects based on their current desktop
+    // Set current desktop's project as in_progress (if none is already)
+    let has_in_progress = state.projects.iter().any(|p| p.board_status == "in_progress");
+    if !has_in_progress {
+        if let Ok(current) = desktop_manager::get_current() {
+            if let Some(project) = state.projects.iter_mut().find(|p| {
+                p.desktop_guid.as_ref() == Some(&current.guid)
+            }) {
+                project.board_status = "in_progress".into();
+                project.updated_at = now.clone();
+            }
+        }
+    }
+
+    // Clean up stale assignments (windows that no longer exist)
     let windows = window_enum::enumerate_windows();
+    let live_handles: std::collections::HashSet<isize> =
+        windows.iter().map(|w| w.handle).collect();
+    state.assignments.retain(|a| live_handles.contains(&a.window_handle));
+
+    // Auto-assign windows to projects based on their current desktop
     let assigned_handles: std::collections::HashSet<isize> = state
         .assignments
         .iter()
@@ -210,10 +247,75 @@ pub fn sync_desktops(state: &mut crate::state::AppState) -> Result<(), String> {
     Ok(())
 }
 
-fn save_state(state: &crate::state::AppState) -> Result<(), String> {
+#[tauri::command]
+pub fn set_project_board_status(
+    state: State<'_, AppStateMutex>,
+    project_id: String,
+    board_status: String,
+) -> Result<Project, String> {
+    let mut state = state.lock().map_err(|e| e.to_string())?;
+    let now = chrono::Utc::now().to_rfc3339();
+
+    // If setting to in_progress, move current in_progress back to todo
+    if board_status == "in_progress" {
+        for p in &mut state.projects {
+            if p.board_status == "in_progress" {
+                p.board_status = "todo".into();
+                p.updated_at = now.clone();
+            }
+        }
+    }
+
+    let project = state
+        .projects
+        .iter_mut()
+        .find(|p| p.id == project_id)
+        .ok_or("Project not found")?;
+
+    project.board_status = board_status.clone();
+    project.updated_at = now;
+
+    let project = project.clone();
+    save_state(&state)?;
+
+    // Switch desktop when activating a project
+    if board_status == "in_progress" {
+        if let Some(ref guid) = project.desktop_guid {
+            if let Ok(desktops) = desktop_manager::list_desktops() {
+                if let Some(desktop) = desktops.iter().find(|d| &d.guid == guid) {
+                    let _ = desktop_manager::switch_to_desktop(desktop.index);
+                }
+            }
+        }
+    }
+
+    Ok(project)
+}
+
+#[tauri::command]
+pub fn reorder_projects(
+    state: State<'_, AppStateMutex>,
+    project_ids: Vec<String>,
+) -> Result<(), String> {
+    let mut state = state.lock().map_err(|e| e.to_string())?;
+    let now = chrono::Utc::now().to_rfc3339();
+
+    for (index, id) in project_ids.iter().enumerate() {
+        if let Some(project) = state.projects.iter_mut().find(|p| &p.id == id) {
+            project.sort_order = index as u32;
+            project.updated_at = now.clone();
+        }
+    }
+
+    save_state(&state)?;
+    Ok(())
+}
+
+pub fn save_state(state: &crate::state::AppState) -> Result<(), String> {
     let data = PersistenceData {
         projects: state.projects.clone(),
         assignments: state.assignments.clone(),
+        tasks: state.tasks.clone(),
     };
     persistence::save_data(&state.data_path, &data)
 }

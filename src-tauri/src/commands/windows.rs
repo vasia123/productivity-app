@@ -1,14 +1,20 @@
 use tauri::State;
 
 use crate::desktop_manager;
-use crate::models::{PersistenceData, WindowAssignment, WindowInfo};
-use crate::persistence;
+use crate::models::{WindowAssignment, WindowInfo};
 use crate::state::AppStateMutex;
 use crate::window_enum;
+
+use super::projects::save_state;
 
 #[tauri::command]
 pub fn list_open_windows() -> Result<Vec<WindowInfo>, String> {
     Ok(window_enum::enumerate_windows())
+}
+
+#[tauri::command]
+pub fn list_all_windows() -> Result<Vec<WindowInfo>, String> {
+    Ok(window_enum::enumerate_all_windows())
 }
 
 #[tauri::command]
@@ -57,12 +63,7 @@ pub fn assign_window_to_project(
     state.assignments.retain(|a| a.window_handle != window_handle);
     state.assignments.push(assignment);
 
-    let data = PersistenceData {
-        projects: state.projects.clone(),
-        assignments: state.assignments.clone(),
-    };
-    persistence::save_data(&state.data_path, &data)?;
-
+    save_state(&state)?;
     Ok(())
 }
 
@@ -73,14 +74,76 @@ pub fn unassign_window(
 ) -> Result<(), String> {
     let mut state = state.lock().map_err(|e| e.to_string())?;
     state.assignments.retain(|a| a.window_handle != window_handle);
+    save_state(&state)?;
+    Ok(())
+}
 
-    let data = PersistenceData {
-        projects: state.projects.clone(),
-        assignments: state.assignments.clone(),
-    };
-    persistence::save_data(&state.data_path, &data)?;
+#[tauri::command]
+pub fn kill_window_process(
+    state: State<'_, AppStateMutex>,
+    window_handle: isize,
+) -> Result<(), String> {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
+    use windows::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+
+    unsafe {
+        let hwnd = HWND(window_handle as *mut _);
+        let mut pid: u32 = 0;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid == 0 {
+            return Err("Could not get process ID".into());
+        }
+
+        let handle = OpenProcess(PROCESS_TERMINATE, false, pid)
+            .map_err(|e| format!("Could not open process: {e}"))?;
+        TerminateProcess(handle, 1)
+            .map_err(|e| format!("Could not terminate process: {e}"))?;
+    }
+
+    // Remove assignment
+    let mut state = state.lock().map_err(|e| e.to_string())?;
+    state.assignments.retain(|a| a.window_handle != window_handle);
+    save_state(&state)?;
 
     Ok(())
+}
+
+#[derive(serde::Serialize, Clone)]
+pub struct OtherWindowInfo {
+    pub window_handle: isize,
+    pub window_title: String,
+    pub exe_name: String,
+    pub project_id: String,
+    pub project_name: String,
+}
+
+#[tauri::command]
+pub fn get_other_project_windows(
+    state: State<'_, AppStateMutex>,
+    exclude_project_id: String,
+) -> Result<Vec<OtherWindowInfo>, String> {
+    let state = state.lock().map_err(|e| e.to_string())?;
+    Ok(state
+        .assignments
+        .iter()
+        .filter(|a| a.project_id != exclude_project_id)
+        .map(|a| {
+            let project_name = state
+                .projects
+                .iter()
+                .find(|p| p.id == a.project_id)
+                .map(|p| p.name.clone())
+                .unwrap_or_default();
+            OtherWindowInfo {
+                window_handle: a.window_handle,
+                window_title: a.window_title.clone(),
+                exe_name: a.exe_name.clone(),
+                project_id: a.project_id.clone(),
+                project_name,
+            }
+        })
+        .collect())
 }
 
 #[tauri::command]

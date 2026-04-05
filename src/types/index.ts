@@ -4,8 +4,27 @@ export interface Project {
   desktop_guid: string | null;
   desktop_name: string | null;
   color: string | null;
+  sort_order: number;
+  board_status: "todo" | "in_progress";
   created_at: string;
   updated_at: string;
+}
+
+export interface Task {
+  id: string;
+  project_id: string;
+  title: string;
+  status: "todo" | "done";
+  created_at: string;
+  completed_at: string | null;
+}
+
+export interface OtherWindowInfo {
+  window_handle: number;
+  window_title: string;
+  exe_name: string;
+  project_id: string;
+  project_name: string;
 }
 
 export interface WindowAssignment {

@@ -1,16 +1,33 @@
 <script setup lang="ts">
-import { onMounted, computed } from "vue";
+import { onMounted, computed, ref, nextTick } from "vue";
 import { useRouter } from "vue-router";
 import { useProjectsStore } from "@/stores/projects";
 import { useWindowsStore } from "@/stores/windows";
+import { api } from "@/composables/useTauri";
+import type { WindowInfo } from "@/types";
 
 const props = defineProps<{ id: string }>();
 const router = useRouter();
 const projectsStore = useProjectsStore();
 const windowsStore = useWindowsStore();
 
+const editing = ref(false);
+const editName = ref("");
+const nameInput = ref<HTMLInputElement | null>(null);
+const search = ref("");
+
 const project = computed(() =>
   projectsStore.projects.find((p) => p.id === props.id)
+);
+
+function matchesSearch(title: string, exe: string): boolean {
+  const q = search.value.toLowerCase().trim();
+  if (!q) return true;
+  return title.toLowerCase().includes(q) || exe.toLowerCase().includes(q);
+}
+
+const filteredProjectWindows = computed(() =>
+  windowsStore.projectWindows.filter((w) => matchesSearch(w.window_title, w.exe_name))
 );
 
 const assignedHandles = computed(
@@ -18,8 +35,46 @@ const assignedHandles = computed(
 );
 
 const availableWindows = computed(() =>
-  windowsStore.openWindows.filter((w) => !assignedHandles.value.has(w.handle))
+  windowsStore.openWindows.filter((w) => !assignedHandles.value.has(w.handle) && matchesSearch(w.title, w.exe_name))
 );
+
+const allWindows = ref<WindowInfo[]>([]);
+
+interface WindowGroup {
+  projectName: string;
+  desktopId: string | null;
+  windows: WindowInfo[];
+}
+
+const groupedOtherWindows = computed(() => {
+  const other = allWindows.value.filter(
+    (w) => !assignedHandles.value.has(w.handle) && w.desktop_id && matchesSearch(w.title, w.exe_name)
+  );
+
+  // Build desktop_guid → project name map
+  const desktopToProject: Record<string, string> = {};
+  for (const p of projectsStore.projects) {
+    if (p.desktop_guid && p.id !== props.id) {
+      desktopToProject[p.desktop_guid] = p.name;
+    }
+  }
+
+  // Group by desktop
+  const groups: Record<string, WindowGroup> = {};
+  for (const w of other) {
+    const key = w.desktop_id || "__unassigned__";
+    if (!groups[key]) {
+      groups[key] = {
+        projectName: (w.desktop_id && desktopToProject[w.desktop_id]) || "Unassigned",
+        desktopId: w.desktop_id,
+        windows: [],
+      };
+    }
+    groups[key].windows.push(w);
+  }
+
+  return Object.values(groups).sort((a, b) => a.projectName.localeCompare(b.projectName));
+});
 
 onMounted(async () => {
   if (projectsStore.projects.length === 0) {
@@ -27,6 +82,7 @@ onMounted(async () => {
   }
   await windowsStore.fetchProjectWindows(props.id);
   await windowsStore.fetchOpenWindows();
+  allWindows.value = await api.listAllWindows();
 });
 
 async function assignWindow(handle: number) {
@@ -39,17 +95,51 @@ async function unassignWindow(handle: number) {
   await windowsStore.fetchOpenWindows();
 }
 
+async function killProcess(handle: number, exeName: string) {
+  if (!confirm(`Kill process "${exeName}"?`)) return;
+  const { api } = await import("@/composables/useTauri");
+  await api.killWindowProcess(handle);
+  await windowsStore.fetchProjectWindows(props.id);
+  await windowsStore.fetchOpenWindows();
+}
+
 async function switchHere() {
   await projectsStore.switchProject(props.id);
 }
 
-function refreshWindows() {
-  windowsStore.fetchOpenWindows();
-  windowsStore.fetchProjectWindows(props.id);
+async function refreshWindows() {
+  await windowsStore.fetchOpenWindows();
+  await windowsStore.fetchProjectWindows(props.id);
+  allWindows.value = await api.listAllWindows();
+}
+
+async function reassignWindow(handle: number) {
+  await windowsStore.assignWindow(props.id, handle);
+  await refreshWindows();
 }
 
 function goBack() {
   router.push({ name: "projects" });
+}
+
+async function startRename() {
+  editName.value = project.value?.name || "";
+  editing.value = true;
+  await nextTick();
+  nameInput.value?.focus();
+  nameInput.value?.select();
+}
+
+async function confirmRename() {
+  const name = editName.value.trim();
+  if (name && name !== project.value?.name) {
+    await projectsStore.renameProject(props.id, name);
+  }
+  editing.value = false;
+}
+
+function cancelRename() {
+  editing.value = false;
 }
 </script>
 
@@ -58,7 +148,20 @@ function goBack() {
     <header class="header">
       <div class="header-left">
         <button class="btn-ghost" @click="goBack">&larr; Back</button>
-        <h1>{{ project?.name || "Project" }}</h1>
+        <input
+          v-if="editing"
+          ref="nameInput"
+          v-model="editName"
+          type="text"
+          class="rename-input"
+          @keyup.enter="confirmRename"
+          @keyup.escape="cancelRename"
+          @blur="confirmRename"
+        />
+        <template v-else>
+          <h1>{{ project?.name || "Project" }}</h1>
+          <button class="btn-icon" @click="startRename" title="Rename">&#9998;</button>
+        </template>
       </div>
       <div class="header-actions">
         <button class="btn-ghost" @click="refreshWindows">Refresh</button>
@@ -68,17 +171,26 @@ function goBack() {
       </div>
     </header>
 
+    <div class="search-bar">
+      <input
+        v-model="search"
+        type="text"
+        class="search-input"
+        placeholder="Search windows by title or exe..."
+      />
+    </div>
+
     <div class="columns">
       <section class="column">
-        <h2>Assigned Windows ({{ windowsStore.projectWindows.length }})</h2>
+        <h2>Assigned Windows ({{ filteredProjectWindows.length }})</h2>
         <div
-          v-if="windowsStore.projectWindows.length === 0"
+          v-if="filteredProjectWindows.length === 0"
           class="empty-column"
         >
-          No windows assigned yet
+          {{ search ? 'No matches' : 'No windows assigned yet' }}
         </div>
         <div
-          v-for="win in windowsStore.projectWindows"
+          v-for="win in filteredProjectWindows"
           :key="win.window_handle"
           class="window-item assigned"
         >
@@ -86,9 +198,14 @@ function goBack() {
             <span class="window-title">{{ win.window_title || "Untitled" }}</span>
             <span class="window-exe">{{ win.exe_name }}</span>
           </div>
-          <button class="btn-ghost btn-small" @click="unassignWindow(win.window_handle)">
-            Remove
-          </button>
+          <div class="window-actions">
+            <button class="btn-ghost btn-small" @click="unassignWindow(win.window_handle)">
+              Remove
+            </button>
+            <button class="btn-danger btn-small" @click="killProcess(win.window_handle, win.exe_name)">
+              Kill
+            </button>
+          </div>
         </div>
       </section>
 
@@ -112,6 +229,30 @@ function goBack() {
         </div>
       </section>
     </div>
+
+    <section v-if="groupedOtherWindows.length > 0" class="other-section">
+      <h2>Other Windows</h2>
+      <div
+        v-for="group in groupedOtherWindows"
+        :key="group.desktopId || 'none'"
+        class="window-group"
+      >
+        <h3 class="group-title">{{ group.projectName }} ({{ group.windows.length }})</h3>
+        <div
+          v-for="win in group.windows"
+          :key="win.handle"
+          class="window-item"
+        >
+          <div class="window-info">
+            <span class="window-title">{{ win.title || "Untitled" }}</span>
+            <span class="window-exe">{{ win.exe_name }}</span>
+          </div>
+          <button class="btn-primary btn-small" @click="reassignWindow(win.handle)">
+            Assign
+          </button>
+        </div>
+      </div>
+    </section>
   </div>
 </template>
 
@@ -139,9 +280,46 @@ function goBack() {
   font-size: 22px;
 }
 
+.btn-icon {
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 18px;
+  padding: 4px 6px;
+  line-height: 1;
+}
+
+.btn-icon:hover {
+  color: var(--accent);
+}
+
+.rename-input {
+  font-size: 22px;
+  font-weight: bold;
+  width: 300px;
+}
+
 .header-actions {
   display: flex;
   gap: 8px;
+}
+
+.search-bar {
+  margin-bottom: 16px;
+}
+
+.search-input {
+  width: 100%;
+  padding: 8px 12px;
+  font-size: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-card);
+  color: var(--text-primary);
+}
+
+.search-input:focus {
+  outline: none;
+  border-color: var(--accent);
 }
 
 .columns {
@@ -204,6 +382,36 @@ function goBack() {
 .window-exe {
   font-size: 12px;
   color: var(--text-secondary);
+}
+
+.window-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.other-section {
+  margin-top: 24px;
+}
+
+.other-section h2 {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.window-group {
+  margin-bottom: 16px;
+}
+
+.group-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--accent);
+  margin-bottom: 8px;
 }
 
 .btn-small {

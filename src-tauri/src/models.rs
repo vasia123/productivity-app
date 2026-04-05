@@ -1,5 +1,9 @@
 use serde::{Deserialize, Serialize};
 
+fn default_board_status() -> String {
+    "todo".into()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
     pub id: String,
@@ -7,8 +11,22 @@ pub struct Project {
     pub desktop_guid: Option<String>,
     pub desktop_name: Option<String>,
     pub color: Option<String>,
+    #[serde(default)]
+    pub sort_order: u32,
+    #[serde(default = "default_board_status")]
+    pub board_status: String,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Task {
+    pub id: String,
+    pub project_id: String,
+    pub title: String,
+    pub status: String,
+    pub created_at: String,
+    pub completed_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,4 +59,6 @@ pub struct DesktopInfo {
 pub struct PersistenceData {
     pub projects: Vec<Project>,
     pub assignments: Vec<WindowAssignment>,
+    #[serde(default)]
+    pub tasks: Vec<Task>,
 }

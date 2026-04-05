@@ -8,11 +8,13 @@ pub fn load_data(path: &Path) -> PersistenceData {
         serde_json::from_str(&content).unwrap_or(PersistenceData {
             projects: Vec::new(),
             assignments: Vec::new(),
+            tasks: Vec::new(),
         })
     } else {
         PersistenceData {
             projects: Vec::new(),
             assignments: Vec::new(),
+            tasks: Vec::new(),
         }
     }
 }

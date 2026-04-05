@@ -1,12 +1,21 @@
 import { defineStore } from "pinia";
-import { ref } from "vue";
+import { ref, computed } from "vue";
 import { api } from "@/composables/useTauri";
 import type { Project } from "@/types";
 
 export const useProjectsStore = defineStore("projects", () => {
   const projects = ref<Project[]>([]);
-  const currentProjectId = ref<string | null>(null);
   const loading = ref(false);
+
+  const todoProjects = computed(() =>
+    projects.value
+      .filter((p) => p.board_status === "todo")
+      .sort((a, b) => a.sort_order - b.sort_order)
+  );
+
+  const inProgressProject = computed(() =>
+    projects.value.find((p) => p.board_status === "in_progress") ?? null
+  );
 
   async function fetchProjects() {
     loading.value = true;
@@ -26,9 +35,6 @@ export const useProjectsStore = defineStore("projects", () => {
   async function deleteProject(id: string) {
     await api.deleteProject(id);
     projects.value = projects.value.filter((p) => p.id !== id);
-    if (currentProjectId.value === id) {
-      currentProjectId.value = null;
-    }
   }
 
   async function renameProject(id: string, name: string) {
@@ -37,6 +43,10 @@ export const useProjectsStore = defineStore("projects", () => {
     if (index !== -1) {
       projects.value[index] = updated;
     }
+  }
+
+  async function switchProject(id: string) {
+    await api.switchProject(id);
   }
 
   async function importDesktops() {
@@ -48,20 +58,28 @@ export const useProjectsStore = defineStore("projects", () => {
     }
   }
 
-  async function switchProject(id: string) {
-    await api.switchProject(id);
-    currentProjectId.value = id;
+  async function setProjectBoardStatus(id: string, boardStatus: string) {
+    await api.setProjectBoardStatus(id, boardStatus);
+    await fetchProjects();
+  }
+
+  async function reorderProjects(projectIds: string[]) {
+    await api.reorderProjects(projectIds);
+    await fetchProjects();
   }
 
   return {
     projects,
-    currentProjectId,
     loading,
+    todoProjects,
+    inProgressProject,
     fetchProjects,
-    importDesktops,
     createProject,
     deleteProject,
     renameProject,
     switchProject,
+    importDesktops,
+    setProjectBoardStatus,
+    reorderProjects,
   };
 });

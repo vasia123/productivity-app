@@ -16,7 +16,9 @@ pub fn list_desktops() -> Result<Vec<DesktopInfo>, String> {
         let guid = format!("{:?}", desktop.get_id().map_err(|e| err("get_id", e))?);
         let name = desktop
             .get_name()
-            .unwrap_or_else(|_| format!("Desktop {}", index + 1));
+            .ok()
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| format!("Desktop {}", index + 1));
 
         result.push(DesktopInfo {
             guid: guid.clone(),
@@ -32,10 +34,12 @@ pub fn list_desktops() -> Result<Vec<DesktopInfo>, String> {
 pub fn get_current() -> Result<DesktopInfo, String> {
     let current = get_current_desktop().map_err(|e| err("Failed to get current", e))?;
     let guid = format!("{:?}", current.get_id().map_err(|e| err("get_id", e))?);
+    let index = current.get_index().map_err(|e| err("get_index", e))?;
     let name = current
         .get_name()
-        .unwrap_or_else(|_| "Current Desktop".to_string());
-    let index = current.get_index().map_err(|e| err("get_index", e))?;
+        .ok()
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| format!("Desktop {}", index + 1));
 
     Ok(DesktopInfo {
         guid,
@@ -48,10 +52,12 @@ pub fn get_current() -> Result<DesktopInfo, String> {
 pub fn create_desktop() -> Result<DesktopInfo, String> {
     let desktop = winvd::create_desktop().map_err(|e| err("Failed to create desktop", e))?;
     let guid = format!("{:?}", desktop.get_id().map_err(|e| err("get_id", e))?);
+    let index = desktop.get_index().map_err(|e| err("get_index", e))?;
     let name = desktop
         .get_name()
-        .unwrap_or_else(|_| "New Desktop".to_string());
-    let index = desktop.get_index().map_err(|e| err("get_index", e))?;
+        .ok()
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| format!("Desktop {}", index + 1));
 
     Ok(DesktopInfo {
         guid,
